@@ -1,86 +1,114 @@
 #include "usb.h"
+#include <unistd.h>
 
-void test_message(libusb_device_handle *handle);
+#define INPUT_BUFFER_SIZE 100
+#define SEND_TIMEOUT 3000
+#define RECEIVE_TIMEOUT 10
+#define MESSAGE_SIZE 2048
 
 int main(int argc, char** argv) {
-    libusb_device **devs;
     libusb_device_handle *beeprinter;
     libusb_context *ctx;
-    size_t device_count;
+    size_t transferred_bytes, message_size;
+    char *buffer;
+    unsigned char *send_buffer, *answer;
 
-    devs = NULL;
     beeprinter = NULL;
     ctx = NULL;
+    buffer = NULL;
+    send_buffer = NULL;
+    answer = NULL;
 
     // initialize libusb and set debug level
    if(init_libusb(&ctx) < 0) {
         return 1;
     }
-
-    // get a list containing all the devices connected to the system
-    device_count = get_device_list(&ctx, &devs);
-    if(device_count < 0) {
-        return 1;
-    }
-
+ 
     // obtain a pointer to the first BEEVERYCREATIVE printer found
-    beeprinter = get_first_printer(devs, device_count);
-
-    if(beeprinter != NULL) {
-        printf("beeprinter is not NULL!\n");
-        test_message(beeprinter);
-    } else {
-        printf("beeprinter is NULL :(\n");
+    printf("Attempting to find a BEEVERYCREATIVE printer...\n");
+    while(beeprinter == NULL) {
+        beeprinter = get_first_printer(&ctx);
+        
+        if(beeprinter == NULL) {
+            sleep(0.2);
+        }
     }
 
+    printf("Printer has been found!\n\n");
+    printf("Initiating console. Type \"exit\" to finish.\n\n");
 
-    if(beeprinter != NULL) {
-        printf("Releasing interface and closing printer\n");
-        libusb_release_interface(beeprinter, 0);
-        libusb_close(beeprinter);
+    while(1) {
+        printf("> ");
+
+        buffer = malloc(INPUT_BUFFER_SIZE);
+        fgets(buffer, INPUT_BUFFER_SIZE, stdin);
+        fflush(stdin);
+
+        // remove trailing newline character
+        /*
+        if((pos = strchr(buffer, '\0')) != NULL) {
+            *pos = '\0';
+        }
+        */
+
+        if(strcmp(buffer, "exit\n") == 0) {
+            break;
+        }
+
+        message_size = strlen(buffer);
+        send_buffer = malloc(message_size);
+        memcpy(send_buffer, buffer, message_size);
+        transferred_bytes = send_message(beeprinter, send_buffer, message_size, 
+                SEND_TIMEOUT);
+        
+        if(transferred_bytes > 0) {
+            answer = malloc(MESSAGE_SIZE);
+            transferred_bytes = receive_message(beeprinter, answer, 
+                    MESSAGE_SIZE, RECEIVE_TIMEOUT); 
+
+            if(transferred_bytes > 0) {
+                printf("%s\n", answer);
+            } else {
+                printf("(no response)\n");
+            }
+        } else {
+            printf("(error sending message)\n");
+        }
+
+        if(strcmp(buffer, "M630\n") == 0 || strcmp(buffer, "M609\n") == 0) {
+            sleep(2);
+            close_device(beeprinter);
+            beeprinter = NULL;
+            while(beeprinter == NULL) {
+                beeprinter = get_first_printer(&ctx);
+        
+                if(beeprinter == NULL) {
+                    sleep(0.2);
+                }
+            }
+        }
+
+        free(buffer);
+        free(answer);
+        free(send_buffer);
+        buffer = NULL;
+        answer = NULL;
+        send_buffer = NULL;
+
     }
-    
-    if(ctx != NULL) {
-        printf("Exiting libusb\n");
-        libusb_exit(ctx);
+
+//cleanup:
+    close_device(beeprinter);
+    close_libusb(&ctx);
+    beeprinter = NULL;
+    ctx = NULL;
+
+    if(buffer != NULL) {
+        free(buffer);
+        buffer = NULL;
     }
+
     return 0;
 }
 
-void test_message(libusb_device_handle *handle) {
-    unsigned char *data;
-    int retval, bytes_sent, bytes_received;
 
-    data = malloc(5);
-    //data = "M115";
-    //data_size = strlen(data);
-    data[0] = 'M';
-    data[1] = '1';
-    data[2] = '1';
-    data[3] = '5';
-    data[4] = '\n';
-
-    retval = libusb_bulk_transfer(handle, (LIBUSB_ENDPOINT_OUT | 5), data, 5, &bytes_sent, 0);
-
-
-    if(retval == 0) {
-        printf("Message sent successfully, %d bytes were sent\n", bytes_sent);
-    } else {
-        printf("An error has occurred while sending the message\n");
-    }
-
-    data = realloc(data, 128);
-
-    retval = libusb_bulk_transfer(handle, (LIBUSB_ENDPOINT_IN | 2), data, 128, &bytes_received, 0);
-
-    if(retval == 0) {
-        printf("%d bytes received!\n", bytes_received);
-        data[bytes_received] = '\0';
-        printf("%s\n", data);
-    } else {
-        printf("An error has occured while receiving the answer\n");
-    }
-
-    free(data);
-
-}
